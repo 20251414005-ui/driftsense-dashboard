@@ -1,0 +1,1021 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>DriftSense — SEM Inspection Dashboard</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --accent: #4f46e5;
+    --accent-soft: #eef2ff;
+    --ink: #0f172a;
+    --sub: #64748b;
+    --line: #e2e8f0;
+  }
+  * { font-family: 'Inter', system-ui, sans-serif; }
+  .mono { font-family: 'JetBrains Mono', monospace; }
+  body { background: #f8fafc; color: var(--ink); }
+  .card {
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    box-shadow: 0 1px 2px rgba(15,23,42,.04), 0 8px 24px -12px rgba(15,23,42,.08);
+  }
+  .tab-btn {
+    padding: 10px 18px; border-radius: 10px; font-weight: 600; font-size: 14px;
+    color: var(--sub); cursor: pointer; transition: all .15s ease; border: 1px solid transparent;
+  }
+  .tab-btn:hover { color: var(--ink); background: #f1f5f9; }
+  .tab-btn.active { color: var(--accent); background: var(--accent-soft); border-color: #c7d2fe; }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+  canvas { image-rendering: pixelated; cursor: crosshair; border-radius: 12px; }
+  #referenceCanvas, #uploadRefCanvas { cursor: default; }
+  .btn-primary {
+    background: var(--accent); color: #fff; font-weight: 600; font-size: 14px;
+    padding: 10px 16px; border-radius: 10px; transition: background .15s ease;
+  }
+  .btn-primary:hover { background: #4338ca; }
+  .btn-primary:disabled { background: #c7c9f5; cursor: not-allowed; }
+  .btn-secondary {
+    background: #fff; color: var(--ink); font-weight: 600; font-size: 14px;
+    padding: 10px 16px; border-radius: 10px; border: 1px solid var(--line); transition: all .15s ease;
+  }
+  .btn-secondary:hover { background: #f8fafc; border-color: #cbd5e1; }
+  .kpi-label { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--sub); }
+  .coord-row { display:flex; justify-content:space-between; padding:9px 0; border-bottom:1px solid var(--line); }
+  .coord-row:last-child { border-bottom:none; }
+  .badge { font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px; }
+  .badge-live { background:#dcfce7; color:#166534; }
+  .badge-pending { background:#fef3c7; color:#92400e; }
+  .dropzone {
+    border: 2px dashed var(--line); border-radius: 16px; padding: 48px 24px; text-align:center;
+    transition: all .15s ease; cursor: pointer;
+  }
+  .dropzone.dragover { border-color: var(--accent); background: var(--accent-soft); }
+  table.data-table { width:100%; border-collapse: collapse; font-size: 13px; }
+  table.data-table th { text-align:left; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:var(--sub); padding:8px 10px; border-bottom:2px solid var(--line); position: sticky; top:0; background:#fff; }
+  table.data-table td { padding:8px 10px; border-bottom:1px solid var(--line); }
+  table.data-table tr:hover td { background:#f8fafc; }
+</style>
+</head>
+<body class="min-h-screen">
+
+<!-- Header -->
+<header class="border-b border-slate-200 bg-white/80 backdrop-blur sticky top-0 z-20">
+  <div class="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <div class="w-9 h-9 rounded-lg bg-indigo-600 flex items-center justify-center text-white font-bold text-sm">DS</div>
+      <div>
+        <h1 class="text-base font-bold leading-tight">DriftSense</h1>
+        <p class="text-xs text-slate-500 leading-tight">SEM Inspection Dashboard — The Nanoscale Collective</p>
+      </div>
+    </div>
+    <div class="flex items-center gap-2" id="tabBar">
+      <button class="tab-btn active" data-tab="generated">Generated</button>
+      <button class="tab-btn" data-tab="upload">Upload Image</button>
+      <button class="tab-btn" data-tab="dataset">Dataset <span id="datasetCountBadge" class="ml-1 mono text-[11px] text-indigo-600"></span></button>
+      <button class="tab-btn" data-tab="rgb">RGB (soon)</button>
+    </div>
+  </div>
+</header>
+
+<main class="max-w-7xl mx-auto px-6 py-8">
+
+  <!-- ============ TAB: GENERATED ============ -->
+  <section id="tab-generated" class="tab-panel active">
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+      <!-- Search image -->
+      <div class="card p-5 lg:col-span-1">
+        <div class="flex items-center justify-between mb-3">
+          <div>
+            <p class="kpi-label">Search Image</p>
+            <p class="text-sm text-slate-500">Full die · 10 nm/px · 1000×1000</p>
+          </div>
+          <span class="badge badge-live">LIVE</span>
+        </div>
+        <canvas id="searchCanvas" width="1000" height="1000" class="w-full border border-slate-200"></canvas>
+        <div class="flex gap-2 mt-4">
+          <button id="btnGenerate" class="btn-primary flex-1">Generate New Pattern</button>
+          <button id="btnDownloadSearch" class="btn-secondary">Download PNG</button>
+        </div>
+      </div>
+
+      <!-- Reference preview -->
+      <div class="card p-5 lg:col-span-1">
+        <div class="flex items-center justify-between mb-3">
+          <div>
+            <p class="kpi-label">Reference Image</p>
+            <p class="text-sm text-slate-500">Live preview · ~10× magnified</p>
+          </div>
+          <span class="badge badge-live" id="interpBadge">BICUBIC</span>
+        </div>
+        <canvas id="referenceCanvas" width="500" height="500" class="w-full border border-slate-200"></canvas>
+        <div class="mt-4 space-y-3">
+          <div>
+            <label class="kpi-label block mb-1">Interpolation mode</label>
+            <select id="interpSelect" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm">
+              <option value="nearest">Nearest</option>
+              <option value="bilinear">Bilinear</option>
+              <option value="bicubic" selected>Bicubic</option>
+            </select>
+          </div>
+          <button id="btnSaveSample" class="btn-primary w-full">Save Sample (randomized 9–11×)</button>
+          <p class="text-xs text-slate-500">Move the mouse over the Search Image to position the window, then click <span class="mono">Save Sample</span> — or click directly on the Search Image.</p>
+        </div>
+      </div>
+
+      <!-- Coordinates -->
+      <div class="card p-5 lg:col-span-1">
+        <p class="kpi-label mb-3">Live Coordinates</p>
+        <div class="space-y-4">
+          <div>
+            <p class="text-xs font-semibold text-slate-400 mb-1">CENTER</p>
+            <div id="coordCenter" class="coord-block"></div>
+          </div>
+          <div>
+            <p class="text-xs font-semibold text-slate-400 mb-1">TOP-LEFT</p>
+            <div id="coordTL" class="coord-block"></div>
+          </div>
+          <div>
+            <p class="text-xs font-semibold text-slate-400 mb-1">BOTTOM-RIGHT</p>
+            <div id="coordBR" class="coord-block"></div>
+          </div>
+        </div>
+        <div class="mt-5 pt-4 border-t border-slate-200 grid grid-cols-2 gap-3">
+          <div>
+            <p class="kpi-label">Seed</p>
+            <p id="seedValue" class="mono text-sm font-semibold">—</p>
+          </div>
+          <div>
+            <p class="kpi-label">Scale</p>
+            <p class="mono text-sm font-semibold">10.0 nm/px</p>
+          </div>
+        </div>
+        <p class="text-xs text-slate-500 mt-3">Coordinates use a bottom-left origin (0,0 = lower-left corner), matching stage/metrology convention. Re-entering the same seed reproduces this exact pattern.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ TAB: UPLOAD ============ -->
+  <section id="tab-upload" class="tab-panel">
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+      <div class="card p-5 lg:col-span-1">
+        <p class="kpi-label mb-3">Your Image</p>
+        <div id="dropzone" class="dropzone">
+          <p class="text-sm font-semibold text-slate-600">Drop an image here, or click to browse</p>
+          <p class="text-xs text-slate-400 mt-1">PNG / JPG — any resolution</p>
+          <input id="fileInput" type="file" accept="image/*" class="hidden" />
+        </div>
+        <canvas id="uploadCanvas" class="w-full border border-slate-200 rounded-xl mt-4 hidden"></canvas>
+        <div class="mt-4 space-y-3 hidden" id="uploadControls">
+          <div>
+            <label class="kpi-label block mb-1">Window size: <span id="windowSizeLabel" class="mono">150 px</span></label>
+            <input id="windowSizeSlider" type="range" min="20" max="500" value="150" class="w-full" />
+          </div>
+          <div>
+            <label class="kpi-label block mb-1">Preview zoom: <span id="zoomLabel" class="mono">10.0×</span></label>
+            <input id="zoomSlider" type="range" min="2" max="20" step="0.5" value="10" class="w-full" />
+          </div>
+        </div>
+      </div>
+
+      <div class="card p-5 lg:col-span-1">
+        <div class="flex items-center justify-between mb-3">
+          <p class="kpi-label">Zoomed Crop</p>
+          <span class="badge badge-live" id="uploadInterpBadge">BICUBIC</span>
+        </div>
+        <canvas id="uploadRefCanvas" width="500" height="500" class="w-full border border-slate-200"></canvas>
+        <div class="mt-4 space-y-3">
+          <div>
+            <label class="kpi-label block mb-1">Interpolation mode</label>
+            <select id="uploadInterpSelect" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm">
+              <option value="nearest">Nearest</option>
+              <option value="bilinear">Bilinear</option>
+              <option value="bicubic" selected>Bicubic</option>
+            </select>
+          </div>
+          <button id="btnSaveUploadSample" class="btn-primary w-full" disabled>Save Crop</button>
+          <p class="text-xs text-slate-500">Hover over your uploaded image to position the window, then save. Physical scale (nm/px) is unknown for uploaded images unless you set one below.</p>
+          <div>
+            <label class="kpi-label block mb-1">Optional scale (nm/px)</label>
+            <input id="uploadScaleInput" type="number" placeholder="e.g. 10" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm mono" />
+          </div>
+        </div>
+      </div>
+
+      <div class="card p-5 lg:col-span-1">
+        <p class="kpi-label mb-3">Live Coordinates</p>
+        <div class="space-y-4">
+          <div>
+            <p class="text-xs font-semibold text-slate-400 mb-1">CENTER</p>
+            <div id="uploadCoordCenter" class="coord-block"></div>
+          </div>
+          <div>
+            <p class="text-xs font-semibold text-slate-400 mb-1">TOP-LEFT</p>
+            <div id="uploadCoordTL" class="coord-block"></div>
+          </div>
+          <div>
+            <p class="text-xs font-semibold text-slate-400 mb-1">BOTTOM-RIGHT</p>
+            <div id="uploadCoordBR" class="coord-block"></div>
+          </div>
+        </div>
+        <p class="text-xs text-slate-500 mt-4">Coordinates use a bottom-left origin, same convention as the Generated tab, so uploaded and generated samples stay consistent in the dataset manifest.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ TAB: DATASET ============ -->
+  <section id="tab-dataset" class="tab-panel">
+    <div class="card p-5">
+      <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+        <div>
+          <p class="kpi-label">Dataset Manifest</p>
+          <p class="text-sm text-slate-500"><span id="datasetCount">0</span> samples saved this session</p>
+        </div>
+        <div class="flex gap-2">
+          <button id="btnExportCsv" class="btn-secondary">Export CSV</button>
+          <button id="btnExportZip" class="btn-primary">Export ZIP (images + CSV)</button>
+          <button id="btnClearDataset" class="btn-secondary text-red-600">Clear All</button>
+        </div>
+      </div>
+      <p class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
+        This dashboard is a static, backend-free page — saved samples live in this browser tab's memory only. Export to ZIP/CSV before closing the tab or reloading.
+      </p>
+      <div class="overflow-auto max-h-[560px] border border-slate-200 rounded-xl">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>ID</th><th>Source</th><th>Center (px)</th><th>Top-Left (px)</th><th>Bottom-Right (px)</th>
+              <th>Mag.</th><th>Interp.</th><th>Seed</th><th>Preview</th>
+            </tr>
+          </thead>
+          <tbody id="datasetTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ TAB: RGB (placeholder) ============ -->
+  <section id="tab-rgb" class="tab-panel">
+    <div class="card p-10 text-center">
+      <span class="badge badge-pending">COMING SOON</span>
+      <h3 class="text-lg font-bold mt-3">RGB Die Generation</h3>
+      <p class="text-sm text-slate-500 max-w-md mx-auto mt-2">
+        This section is intentionally not built yet. Send a reference RGB die/optical image and this tab will generate matching color imagery alongside the existing grayscale SEM pipeline.
+      </p>
+    </div>
+  </section>
+
+</main>
+
+<footer class="max-w-7xl mx-auto px-6 py-8 text-xs text-slate-400">
+  DriftSense · The Nanoscale Collective · SEMICON India 2026 Hackathon (Applied Materials PS-2)
+</footer>
+
+<script>
+"use strict";
+
+/* =========================================================================
+   Seeded RNG — mulberry32 + Box-Muller gaussian + normal-approx Poisson.
+   A JS-side analogue of the Python generator's np.random.Generator usage:
+   same seed -> same generated pattern, within this dashboard.
+   ========================================================================= */
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+class SeededRNG {
+  constructor(seed) {
+    this.seed = seed >>> 0;
+    this._next = mulberry32(this.seed);
+    this._spareGaussian = null;
+  }
+  random() { return this._next(); }
+  uniform(a, b) { return a + this.random() * (b - a); }
+  randInt(a, bExclusive) { return a + Math.floor(this.random() * (bExclusive - a)); }
+  choice(arr, weights) {
+    if (!weights) return arr[Math.floor(this.random() * arr.length)];
+    const r = this.random();
+    let acc = 0;
+    for (let i = 0; i < arr.length; i++) { acc += weights[i]; if (r <= acc) return arr[i]; }
+    return arr[arr.length - 1];
+  }
+  gaussian(mean, std) {
+    if (this._spareGaussian !== null) {
+      const v = this._spareGaussian; this._spareGaussian = null;
+      return mean + std * v;
+    }
+    let u = 0, v = 0;
+    while (u === 0) u = this.random();
+    while (v === 0) v = this.random();
+    const mag = Math.sqrt(-2.0 * Math.log(u));
+    const z0 = mag * Math.cos(2.0 * Math.PI * v);
+    const z1 = mag * Math.sin(2.0 * Math.PI * v);
+    this._spareGaussian = z1;
+    return mean + std * z0;
+  }
+  // Normal approximation to Poisson(lambda) — accurate for lambda > ~10,
+  // which holds here since pixel values (post shot_scale division) are
+  // well above that range. Matches the "Poisson-Gaussian" SEM noise model
+  // used in the reference Python implementation.
+  poissonApprox(lambda) {
+    const l = Math.max(lambda, 0);
+    return Math.max(0, l + Math.sqrt(l) * this.gaussian(0, 1));
+  }
+  freshSeed() {
+    if (window.crypto && window.crypto.getRandomValues) {
+      const buf = new Uint32Array(1);
+      window.crypto.getRandomValues(buf);
+      return buf[0];
+    }
+    return Math.floor(Math.random() * 4294967295);
+  }
+}
+
+/* =========================================================================
+   Coordinate system — mirrors CoordinateSystem in driftsense_sem_inspector.py
+   ========================================================================= */
+class CoordinateSystem {
+  constructor(imageSize, nmPerPixel) {
+    this.imageSize = imageSize;
+    this.nmPerPixel = nmPerPixel;
+  }
+  pxToBl(xPx, yPx) { return [Math.round(xPx), (this.imageSize - 1) - Math.round(yPx)]; }
+  pxToNm(xPx, yPx) {
+    const [xBl, yBl] = this.pxToBl(xPx, yPx);
+    return [xBl * this.nmPerPixel, yBl * this.nmPerPixel];
+  }
+  renderInto(el, xPx, yPx, withNm) {
+    const [xBl, yBl] = this.pxToBl(xPx, yPx);
+    let html = `<div class="coord-row"><span class="text-slate-500">X</span><span class="mono font-semibold">${xBl} px</span></div>`;
+    html += `<div class="coord-row"><span class="text-slate-500">Y</span><span class="mono font-semibold">${yBl} px</span></div>`;
+    if (withNm && this.nmPerPixel) {
+      const [xNm, yNm] = this.pxToNm(xPx, yPx);
+      html += `<div class="coord-row"><span class="text-slate-500">X (nm)</span><span class="mono font-semibold">${xNm.toFixed(1)}</span></div>`;
+      html += `<div class="coord-row"><span class="text-slate-500">Y (nm)</span><span class="mono font-semibold">${yNm.toFixed(1)}</span></div>`;
+    }
+    el.innerHTML = html;
+  }
+}
+
+/* =========================================================================
+   Procedural SEM pattern generator — JS port of SEMPatternGenerator.
+   Operates on a flat Float32Array grayscale buffer (row-major), exactly
+   like the numpy float32 canvas in the Python version, then converts to
+   ImageData once at the end.
+   ========================================================================= */
+const SEARCH_SIZE = 1000;
+
+class SEMPatternGenerator {
+  constructor(size) {
+    this.size = size;
+    this.lastSeed = null;
+    this.rng = null;
+  }
+
+  generate(seed) {
+    if (seed === undefined || seed === null) seed = new SeededRNG(1).freshSeed();
+    this.lastSeed = seed;
+    this.rng = new SeededRNG(seed);
+    const W = this.size;
+    const buf = new Float32Array(W * W);
+
+    this._makeSubstrate(buf, W);
+    const regions = this._partitionRegions(W);
+    for (const r of regions) {
+      const kind = this.rng.choice(["line_space", "via_array", "metal_fill", "dummy_fill"], [0.35, 0.25, 0.20, 0.20]);
+      if (kind === "line_space") this._drawLineSpace(buf, W, r);
+      else if (kind === "via_array") this._drawViaArray(buf, W, r);
+      else if (kind === "metal_fill") this._drawMetalRouting(buf, W, r);
+      else this._drawDummyFill(buf, W, r);
+    }
+    this._drawGlobalRouting(buf, W);
+    this._applyChargingEffect(buf, W);
+    this._applySemNoise(buf, W);
+    return buf;
+  }
+
+  _idx(x, y, W) { return y * W + x; }
+
+  _makeSubstrate(buf, W) {
+    const base = this.rng.uniform(90, 115);
+    buf.fill(base);
+    const lowRes = Math.max(4, Math.floor(W / 20));
+    const low = new Float32Array(lowRes * lowRes);
+    for (let i = 0; i < low.length; i++) low[i] = this.rng.gaussian(0, 6);
+    // bilinear upsample lowRes x lowRes -> W x W, add onto buf
+    for (let y = 0; y < W; y++) {
+      const gy = (y / W) * (lowRes - 1);
+      const y0 = Math.floor(gy), y1 = Math.min(lowRes - 1, y0 + 1), fy = gy - y0;
+      for (let x = 0; x < W; x++) {
+        const gx = (x / W) * (lowRes - 1);
+        const x0 = Math.floor(gx), x1 = Math.min(lowRes - 1, x0 + 1), fx = gx - x0;
+        const v00 = low[y0 * lowRes + x0], v01 = low[y0 * lowRes + x1];
+        const v10 = low[y1 * lowRes + x0], v11 = low[y1 * lowRes + x1];
+        const v0 = v00 + (v01 - v00) * fx, v1 = v10 + (v11 - v10) * fx;
+        buf[this._idx(x, y, W)] += v0 + (v1 - v0) * fy;
+      }
+    }
+  }
+
+  _partitionRegions(W) {
+    const nCols = this.rng.randInt(3, 6), nRows = this.rng.randInt(3, 6);
+    const cellW = Math.floor(W / nCols), cellH = Math.floor(W / nRows);
+    const regions = [];
+    for (let r = 0; r < nRows; r++) {
+      for (let c = 0; c < nCols; c++) {
+        const x0 = c * cellW, y0 = r * cellH;
+        const w = c < nCols - 1 ? cellW : W - x0;
+        const h = r < nRows - 1 ? cellH : W - y0;
+        const pad = Math.max(1, Math.floor(Math.min(w, h) * 0.05));
+        regions.push({ x0: x0 + pad, y0: y0 + pad, w: Math.max(1, w - 2 * pad), h: Math.max(1, h - 2 * pad) });
+      }
+    }
+    return regions;
+  }
+
+  _fillRect(buf, W, x0, y0, w, h, value) {
+    for (let y = y0; y < y0 + h; y++) {
+      const rowStart = this._idx(x0, y, W);
+      for (let x = 0; x < w; x++) buf[rowStart + x] = value;
+    }
+  }
+
+  _drawLineSpace(buf, W, { x0, y0, w, h }) {
+    if (w <= 4 || h <= 4) return;
+    const orientation = this.rng.choice(["h", "v"]);
+    const pitch = this.rng.randInt(6, 16);
+    const duty = this.rng.uniform(0.35, 0.6);
+    const lineGray = this.rng.uniform(150, 200);
+    const spaceGray = this.rng.uniform(70, 100);
+    const lineW = Math.max(1, Math.floor(pitch * duty));
+    this._fillRect(buf, W, x0, y0, w, h, spaceGray);
+    if (orientation === "v") {
+      for (let xx = 0; xx < w; xx += pitch) {
+        const jitter = this.rng.randInt(-1, 2);
+        const xEnd = Math.min(w, xx + lineW + jitter);
+        if (xEnd > xx) this._fillRect(buf, W, x0 + xx, y0, xEnd - xx, h, lineGray);
+      }
+    } else {
+      for (let yy = 0; yy < h; yy += pitch) {
+        const jitter = this.rng.randInt(-1, 2);
+        const yEnd = Math.min(h, yy + lineW + jitter);
+        if (yEnd > yy) this._fillRect(buf, W, x0, y0 + yy, w, yEnd - yy, lineGray);
+      }
+    }
+  }
+
+  _fillCircle(buf, W, cx, cy, r, value) {
+    const r2 = r * r;
+    for (let y = Math.max(0, cy - r); y <= Math.min(W - 1, cy + r); y++) {
+      for (let x = Math.max(0, cx - r); x <= Math.min(W - 1, cx + r); x++) {
+        const dx = x - cx, dy = y - cy;
+        if (dx * dx + dy * dy <= r2) buf[this._idx(x, y, W)] = value;
+      }
+    }
+  }
+
+  _strokeCircle(buf, W, cx, cy, r, value) {
+    const steps = Math.max(16, Math.floor(2 * Math.PI * r));
+    for (let i = 0; i < steps; i++) {
+      const theta = (i / steps) * 2 * Math.PI;
+      const x = Math.round(cx + r * Math.cos(theta));
+      const y = Math.round(cy + r * Math.sin(theta));
+      if (x >= 0 && x < W && y >= 0 && y < W) buf[this._idx(x, y, W)] = value;
+    }
+  }
+
+  _drawViaArray(buf, W, { x0, y0, w, h }) {
+    if (w <= 6 || h <= 6) return;
+    const pitch = this.rng.randInt(8, 20);
+    const radius = Math.max(1, Math.floor(pitch * this.rng.uniform(0.25, 0.4)));
+    const baseGray = this.rng.uniform(95, 115);
+    this._fillRect(buf, W, x0, y0, w, h, baseGray);
+    for (let yy = radius + 2; yy < Math.max(radius + 3, h - radius - 2); yy += pitch) {
+      for (let xx = radius + 2; xx < Math.max(radius + 3, w - radius - 2); xx += pitch) {
+        const cx = x0 + xx + this.rng.randInt(-1, 2);
+        const cy = y0 + yy + this.rng.randInt(-1, 2);
+        const dark = this.rng.uniform(40, 60);
+        const brightRim = this.rng.uniform(180, 220);
+        this._fillCircle(buf, W, cx, cy, radius, dark);
+        this._strokeCircle(buf, W, cx, cy, radius, brightRim);
+      }
+    }
+  }
+
+  _drawMetalRouting(buf, W, { x0, y0, w, h }) {
+    if (w <= 4 || h <= 4) return;
+    const baseGray = this.rng.uniform(85, 100);
+    this._fillRect(buf, W, x0, y0, w, h, baseGray);
+    const nTraces = this.rng.randInt(2, 6);
+    for (let i = 0; i < nTraces; i++) {
+      const traceGray = this.rng.uniform(160, 210);
+      const traceW = this.rng.randInt(3, 9);
+      if (this.rng.random() < 0.5) {
+        const yy = this.rng.randInt(0, Math.max(1, h - traceW));
+        this._fillRect(buf, W, x0, y0 + yy, w, traceW, traceGray);
+      } else {
+        const xx = this.rng.randInt(0, Math.max(1, w - traceW));
+        this._fillRect(buf, W, x0 + xx, y0, traceW, h, traceGray);
+      }
+    }
+  }
+
+  _drawDummyFill(buf, W, { x0, y0, w, h }) {
+    if (w <= 6 || h <= 6) return;
+    const baseGray = this.rng.uniform(90, 105);
+    this._fillRect(buf, W, x0, y0, w, h, baseGray);
+    const tile = this.rng.randInt(6, 14);
+    const gap = this.rng.randInt(2, 5);
+    const fillGray = this.rng.uniform(115, 140);
+    const step = tile + gap;
+    for (let yy = 0; yy < Math.max(1, h - tile); yy += step) {
+      for (let xx = 0; xx < Math.max(1, w - tile); xx += step) {
+        if (this.rng.random() < 0.85) this._fillRect(buf, W, x0 + xx, y0 + yy, tile, tile, fillGray);
+      }
+    }
+  }
+
+  _drawGlobalRouting(buf, W) {
+    const n = this.rng.randInt(2, 5);
+    for (let i = 0; i < n; i++) {
+      const gray = this.rng.uniform(170, 210);
+      const width = this.rng.randInt(4, 10);
+      if (this.rng.random() < 0.5) {
+        const y = this.rng.randInt(0, W - width);
+        for (let yy = y; yy < y + width; yy++) {
+          const rowStart = this._idx(0, yy, W);
+          for (let x = 0; x < W; x++) buf[rowStart + x] = buf[rowStart + x] * 0.3 + gray * 0.7;
+        }
+      } else {
+        const x = this.rng.randInt(0, W - width);
+        for (let y = 0; y < W; y++) {
+          const rowStart = this._idx(0, y, W);
+          for (let xx = x; xx < x + width; xx++) buf[rowStart + xx] = buf[rowStart + xx] * 0.3 + gray * 0.7;
+        }
+      }
+    }
+  }
+
+  // Separable box blur, applied 3x, approximates a Gaussian blur cheaply.
+  _boxBlur(buf, W, radius, passes) {
+    let src = buf;
+    for (let p = 0; p < passes; p++) {
+      const tmp = new Float32Array(W * W);
+      // horizontal
+      for (let y = 0; y < W; y++) {
+        let acc = 0;
+        const rowStart = y * W;
+        for (let x = -radius; x <= radius; x++) acc += src[rowStart + Math.min(W - 1, Math.max(0, x))];
+        for (let x = 0; x < W; x++) {
+          tmp[rowStart + x] = acc / (2 * radius + 1);
+          const addX = Math.min(W - 1, x + radius + 1), remX = Math.max(0, x - radius);
+          acc += src[rowStart + addX] - src[rowStart + remX];
+        }
+      }
+      const tmp2 = new Float32Array(W * W);
+      // vertical
+      for (let x = 0; x < W; x++) {
+        let acc = 0;
+        for (let y = -radius; y <= radius; y++) acc += tmp[Math.min(W - 1, Math.max(0, y)) * W + x];
+        for (let y = 0; y < W; y++) {
+          tmp2[y * W + x] = acc / (2 * radius + 1);
+          const addY = Math.min(W - 1, y + radius + 1), remY = Math.max(0, y - radius);
+          acc += tmp[addY * W + x] - tmp[remY * W + x];
+        }
+      }
+      src = tmp2;
+    }
+    return src;
+  }
+
+  // Sobel gradient-magnitude edge glow — a lightweight browser-side stand-in
+  // for the Python version's Canny-edge charging effect (avoids pulling in
+  // a full OpenCV.js/WASM dependency for a purely cosmetic glow).
+  _applyChargingEffect(buf, W) {
+    const gx = new Float32Array(W * W), gy = new Float32Array(W * W);
+    for (let y = 1; y < W - 1; y++) {
+      for (let x = 1; x < W - 1; x++) {
+        const i = this._idx(x, y, W);
+        const tl = buf[i - W - 1], tc = buf[i - W], tr = buf[i - W + 1];
+        const ml = buf[i - 1], mr = buf[i + 1];
+        const bl = buf[i + W - 1], bc = buf[i + W], br = buf[i + W + 1];
+        gx[i] = (tr + 2 * mr + br) - (tl + 2 * ml + bl);
+        gy[i] = (bl + 2 * bc + br) - (tl + 2 * tc + tr);
+      }
+    }
+    const mag = new Float32Array(W * W);
+    for (let i = 0; i < mag.length; i++) mag[i] = Math.min(255, Math.sqrt(gx[i] * gx[i] + gy[i] * gy[i]));
+    const glow = this._boxBlur(mag, W, 2, 2);
+    for (let i = 0; i < buf.length; i++) buf[i] += glow[i] * 0.15;
+  }
+
+  _applySemNoise(buf, W) {
+    const shotScale = 6.0;
+    for (let i = 0; i < buf.length; i++) {
+      const clipped = Math.min(255, Math.max(0, buf[i]));
+      const poisson = this.rng.poissonApprox(clipped / shotScale) * shotScale;
+      const gaussianNoise = this.rng.gaussian(0, 3.5);
+      buf[i] = poisson + gaussianNoise;
+    }
+    const blurred = this._boxBlur(buf, W, 1, 1);
+    for (let i = 0; i < buf.length; i++) buf[i] = Math.min(255, Math.max(0, Math.round(blurred[i])));
+  }
+
+  static toImageData(buf, W) {
+    const imgData = new ImageData(W, W);
+    for (let i = 0; i < W * W; i++) {
+      const v = buf[i];
+      imgData.data[i * 4] = v; imgData.data[i * 4 + 1] = v; imgData.data[i * 4 + 2] = v; imgData.data[i * 4 + 3] = 255;
+    }
+    return imgData;
+  }
+}
+
+/* =========================================================================
+   Dataset store — in-memory (session-only), CSV/ZIP export.
+   ========================================================================= */
+const DatasetStore = {
+  samples: [],
+  nextId: 1,
+  CSV_COLUMNS: ["image_id", "source", "center_x", "center_y", "top_left_x", "top_left_y",
+                "bottom_right_x", "bottom_right_y", "magnification", "interpolation", "generator_seed"],
+
+  add({ source, centerBl, tlBl, brBl, magnification, interpolation, seed, searchBlob, referenceBlob }) {
+    const id = this.nextId++;
+    this.samples.push({
+      id, source, centerBl, tlBl, brBl, magnification, interpolation,
+      seed: seed === null || seed === undefined ? "" : seed,
+      searchBlob, referenceBlob,
+    });
+    this._render();
+    return id;
+  },
+
+  clear() { this.samples = []; this.nextId = 1; this._render(); },
+
+  toCsv() {
+    const rows = [this.CSV_COLUMNS.join(",")];
+    for (const s of this.samples) {
+      rows.push([
+        s.id, s.source, s.centerBl[0], s.centerBl[1], s.tlBl[0], s.tlBl[1],
+        s.brBl[0], s.brBl[1], s.magnification.toFixed(4), s.interpolation, s.seed,
+      ].join(","));
+    }
+    return rows.join("\n");
+  },
+
+  async toZip() {
+    const zip = new JSZip();
+    zip.file("coordinates.csv", this.toCsv());
+    const searchFolder = zip.folder("search");
+    const refFolder = zip.folder("reference");
+    for (const s of this.samples) {
+      const padId = String(s.id).padStart(4, "0");
+      if (s.searchBlob) searchFolder.file(`search_${padId}.png`, s.searchBlob);
+      if (s.referenceBlob) refFolder.file(`reference_${padId}.png`, s.referenceBlob);
+    }
+    return zip.generateAsync({ type: "blob" });
+  },
+
+  _render() {
+    document.getElementById("datasetCount").textContent = this.samples.length;
+    const badge = document.getElementById("datasetCountBadge");
+    badge.textContent = this.samples.length ? `(${this.samples.length})` : "";
+    const tbody = document.getElementById("datasetTableBody");
+    tbody.innerHTML = "";
+    for (const s of [...this.samples].reverse()) {
+      const tr = document.createElement("tr");
+      const thumbUrl = s.referenceBlob ? URL.createObjectURL(s.referenceBlob) : "";
+      tr.innerHTML = `
+        <td class="mono">${s.id}</td>
+        <td><span class="badge ${s.source === "generated" ? "badge-live" : "badge-pending"}">${s.source}</span></td>
+        <td class="mono">${s.centerBl[0]}, ${s.centerBl[1]}</td>
+        <td class="mono">${s.tlBl[0]}, ${s.tlBl[1]}</td>
+        <td class="mono">${s.brBl[0]}, ${s.brBl[1]}</td>
+        <td class="mono">${s.magnification.toFixed(2)}×</td>
+        <td>${s.interpolation}</td>
+        <td class="mono">${s.seed}</td>
+        <td>${thumbUrl ? `<img src="${thumbUrl}" class="w-10 h-10 rounded object-cover border border-slate-200" />` : ""}</td>
+      `;
+      tbody.appendChild(tr);
+    }
+  },
+};
+
+/* =========================================================================
+   Shared helper: crop + resize a source canvas region into a new canvas at
+   a given output size, honoring an interpolation mode.
+   ========================================================================= */
+function cropAndResize(sourceCanvas, x0, y0, w, h, outSize, interpMode) {
+  const out = document.createElement("canvas");
+  out.width = outSize; out.height = outSize;
+  const ctx = out.getContext("2d");
+  if (interpMode === "nearest") {
+    ctx.imageSmoothingEnabled = false;
+  } else {
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = interpMode === "bicubic" ? "high" : "low";
+  }
+  ctx.drawImage(sourceCanvas, x0, y0, w, h, 0, 0, outSize, outSize);
+  return out;
+}
+
+function canvasToBlob(canvas) {
+  return new Promise((resolve) => canvas.toBlob((b) => resolve(b), "image/png"));
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+/* =========================================================================
+   Tab switching
+   ========================================================================= */
+document.querySelectorAll(".tab-btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
+    document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
+    btn.classList.add("active");
+    document.getElementById(`tab-${btn.dataset.tab}`).classList.add("active");
+  });
+});
+
+/* =========================================================================
+   GENERATED TAB wiring
+   ========================================================================= */
+const WINDOW_SIZE = 150;
+const NM_PER_PIXEL = 10.0;
+const searchCanvas = document.getElementById("searchCanvas");
+const searchCtx = searchCanvas.getContext("2d");
+const referenceCanvas = document.getElementById("referenceCanvas");
+const coordSys = new CoordinateSystem(SEARCH_SIZE, NM_PER_PIXEL);
+const generator = new SEMPatternGenerator(SEARCH_SIZE);
+
+let currentBuf = null;
+let squareCenter = [SEARCH_SIZE / 2, SEARCH_SIZE / 2];
+let genInterp = "bicubic";
+
+function redrawSearchCanvas() {
+  const imgData = SEMPatternGenerator.toImageData(currentBuf, SEARCH_SIZE);
+  searchCtx.putImageData(imgData, 0, 0);
+  // red window overlay
+  const half = WINDOW_SIZE / 2;
+  const x0 = clamp(squareCenter[0] - half, 0, SEARCH_SIZE - WINDOW_SIZE);
+  const y0 = clamp(squareCenter[1] - half, 0, SEARCH_SIZE - WINDOW_SIZE);
+  searchCtx.strokeStyle = "#ef4444";
+  searchCtx.lineWidth = 3;
+  searchCtx.strokeRect(x0, y0, WINDOW_SIZE, WINDOW_SIZE);
+}
+
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+function currentWindowBounds() {
+  const half = WINDOW_SIZE / 2;
+  const x0 = clamp(squareCenter[0] - half, 0, SEARCH_SIZE - WINDOW_SIZE);
+  const y0 = clamp(squareCenter[1] - half, 0, SEARCH_SIZE - WINDOW_SIZE);
+  return [x0, y0, x0 + WINDOW_SIZE, y0 + WINDOW_SIZE];
+}
+
+function updateReferencePreview() {
+  const [x0, y0, x1, y1] = currentWindowBounds();
+  // Draw the raw (non-overlay) buffer into an offscreen canvas so the red
+  // window box never leaks into the crop used for the reference preview.
+  const rawCanvas = document.createElement("canvas");
+  rawCanvas.width = SEARCH_SIZE; rawCanvas.height = SEARCH_SIZE;
+  rawCanvas.getContext("2d").putImageData(SEMPatternGenerator.toImageData(currentBuf, SEARCH_SIZE), 0, 0);
+  const cropped = cropAndResize(rawCanvas, x0, y0, WINDOW_SIZE, WINDOW_SIZE, referenceCanvas.width, genInterp);
+  referenceCanvas.getContext("2d").drawImage(cropped, 0, 0);
+}
+
+function updateCoordDisplays() {
+  const [x0, y0, x1, y1] = currentWindowBounds();
+  coordSys.renderInto(document.getElementById("coordCenter"), squareCenter[0], squareCenter[1], true);
+  coordSys.renderInto(document.getElementById("coordTL"), x0, y0, true);
+  coordSys.renderInto(document.getElementById("coordBR"), x1, y1, true);
+}
+
+function regenerate(seed) {
+  currentBuf = generator.generate(seed);
+  document.getElementById("seedValue").textContent = generator.lastSeed;
+  redrawSearchCanvas();
+  updateReferencePreview();
+  updateCoordDisplays();
+}
+
+searchCanvas.addEventListener("mousemove", (e) => {
+  const rect = searchCanvas.getBoundingClientRect();
+  const scaleX = SEARCH_SIZE / rect.width, scaleY = SEARCH_SIZE / rect.height;
+  const half = WINDOW_SIZE / 2;
+  const fx = (e.clientX - rect.left) * scaleX;
+  const fy = (e.clientY - rect.top) * scaleY;
+  squareCenter = [clamp(fx, half, SEARCH_SIZE - half), clamp(fy, half, SEARCH_SIZE - half)];
+  redrawSearchCanvas();
+  updateReferencePreview();
+  updateCoordDisplays();
+});
+
+searchCanvas.addEventListener("click", () => saveGeneratedSample());
+
+document.getElementById("btnGenerate").addEventListener("click", () => regenerate());
+document.getElementById("interpSelect").addEventListener("change", (e) => {
+  genInterp = e.target.value;
+  document.getElementById("interpBadge").textContent = genInterp.toUpperCase();
+  updateReferencePreview();
+});
+document.getElementById("btnSaveSample").addEventListener("click", () => saveGeneratedSample());
+
+document.getElementById("btnDownloadSearch").addEventListener("click", async () => {
+  const blob = await canvasToBlob(searchCanvasRaw());
+  downloadBlob(blob, "DriftSense_SearchImage.png");
+});
+
+function searchCanvasRaw() {
+  const c = document.createElement("canvas");
+  c.width = SEARCH_SIZE; c.height = SEARCH_SIZE;
+  c.getContext("2d").putImageData(SEMPatternGenerator.toImageData(currentBuf, SEARCH_SIZE), 0, 0);
+  return c;
+}
+
+async function saveGeneratedSample() {
+  const [x0, y0, x1, y1] = currentWindowBounds();
+  const magnification = generator.rng.uniform(9, 11);
+  const refSide = Math.max(1, Math.round(WINDOW_SIZE * magnification));
+  const rawCanvas = searchCanvasRaw();
+  const refCanvasFull = cropAndResize(rawCanvas, x0, y0, WINDOW_SIZE, WINDOW_SIZE, refSide, genInterp);
+
+  const searchBlob = await canvasToBlob(rawCanvas);
+  const referenceBlob = await canvasToBlob(refCanvasFull);
+
+  DatasetStore.add({
+    source: "generated",
+    centerBl: coordSys.pxToBl(squareCenter[0], squareCenter[1]),
+    tlBl: coordSys.pxToBl(x0, y0),
+    brBl: coordSys.pxToBl(x1, y1),
+    magnification, interpolation: genInterp, seed: generator.lastSeed,
+    searchBlob, referenceBlob,
+  });
+}
+
+regenerate(); // initial pattern on load
+
+/* =========================================================================
+   UPLOAD TAB wiring
+   ========================================================================= */
+const dropzone = document.getElementById("dropzone");
+const fileInput = document.getElementById("fileInput");
+const uploadCanvas = document.getElementById("uploadCanvas");
+const uploadRefCanvas = document.getElementById("uploadRefCanvas");
+const uploadCoordSysHolder = { cs: null };
+let uploadImgLoaded = false;
+let uploadWindowSize = 150;
+let uploadZoom = 10.0;
+let uploadInterp = "bicubic";
+let uploadCenter = [0, 0];
+
+dropzone.addEventListener("click", () => fileInput.click());
+dropzone.addEventListener("dragover", (e) => { e.preventDefault(); dropzone.classList.add("dragover"); });
+dropzone.addEventListener("dragleave", () => dropzone.classList.remove("dragover"));
+dropzone.addEventListener("drop", (e) => {
+  e.preventDefault(); dropzone.classList.remove("dragover");
+  if (e.dataTransfer.files.length) loadUploadedImage(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener("change", (e) => { if (e.target.files.length) loadUploadedImage(e.target.files[0]); });
+
+function loadUploadedImage(file) {
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    const img = new Image();
+    img.onload = () => {
+      uploadCanvas.width = img.naturalWidth;
+      uploadCanvas.height = img.naturalHeight;
+      uploadCanvas.getContext("2d").drawImage(img, 0, 0);
+      uploadCanvas.classList.remove("hidden");
+      document.getElementById("uploadControls").classList.remove("hidden");
+      document.getElementById("btnSaveUploadSample").disabled = false;
+      uploadImgLoaded = true;
+      uploadCenter = [img.naturalWidth / 2, img.naturalHeight / 2];
+      uploadWindowSize = Math.min(uploadWindowSize, Math.floor(Math.min(img.naturalWidth, img.naturalHeight) * 0.6));
+      document.getElementById("windowSizeSlider").max = Math.floor(Math.min(img.naturalWidth, img.naturalHeight) * 0.9);
+      updateUploadPreview();
+    };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+function uploadWindowBounds() {
+  const half = uploadWindowSize / 2;
+  const W = uploadCanvas.width, H = uploadCanvas.height;
+  const x0 = clamp(uploadCenter[0] - half, 0, Math.max(0, W - uploadWindowSize));
+  const y0 = clamp(uploadCenter[1] - half, 0, Math.max(0, H - uploadWindowSize));
+  return [x0, y0, x0 + uploadWindowSize, y0 + uploadWindowSize];
+}
+
+function updateUploadPreview() {
+  if (!uploadImgLoaded) return;
+  const [x0, y0, x1, y1] = uploadWindowBounds();
+  const cropped = cropAndResize(uploadCanvas, x0, y0, uploadWindowSize, uploadWindowSize, uploadRefCanvas.width, uploadInterp);
+  uploadRefCanvas.getContext("2d").clearRect(0, 0, uploadRefCanvas.width, uploadRefCanvas.height);
+  uploadRefCanvas.getContext("2d").drawImage(cropped, 0, 0);
+
+  const scale = parseFloat(document.getElementById("uploadScaleInput").value);
+  const csForImage = new CoordinateSystem(uploadCanvas.height, isNaN(scale) ? null : scale);
+  uploadCoordSysHolder.cs = csForImage;
+  csForImage.renderInto(document.getElementById("uploadCoordCenter"), uploadCenter[0], uploadCenter[1], !isNaN(scale));
+  csForImage.renderInto(document.getElementById("uploadCoordTL"), x0, y0, !isNaN(scale));
+  csForImage.renderInto(document.getElementById("uploadCoordBR"), x1, y1, !isNaN(scale));
+}
+
+uploadCanvas.addEventListener("mousemove", (e) => {
+  if (!uploadImgLoaded) return;
+  const rect = uploadCanvas.getBoundingClientRect();
+  const scaleX = uploadCanvas.width / rect.width, scaleY = uploadCanvas.height / rect.height;
+  const half = uploadWindowSize / 2;
+  const fx = (e.clientX - rect.left) * scaleX;
+  const fy = (e.clientY - rect.top) * scaleY;
+  uploadCenter = [
+    clamp(fx, half, Math.max(half, uploadCanvas.width - half)),
+    clamp(fy, half, Math.max(half, uploadCanvas.height - half)),
+  ];
+  updateUploadPreview();
+});
+
+document.getElementById("windowSizeSlider").addEventListener("input", (e) => {
+  uploadWindowSize = parseInt(e.target.value, 10);
+  document.getElementById("windowSizeLabel").textContent = `${uploadWindowSize} px`;
+  updateUploadPreview();
+});
+document.getElementById("zoomSlider").addEventListener("input", (e) => {
+  uploadZoom = parseFloat(e.target.value);
+  document.getElementById("zoomLabel").textContent = `${uploadZoom.toFixed(1)}×`;
+});
+document.getElementById("uploadInterpSelect").addEventListener("change", (e) => {
+  uploadInterp = e.target.value;
+  document.getElementById("uploadInterpBadge").textContent = uploadInterp.toUpperCase();
+  updateUploadPreview();
+});
+document.getElementById("uploadScaleInput").addEventListener("input", updateUploadPreview);
+
+document.getElementById("btnSaveUploadSample").addEventListener("click", async () => {
+  if (!uploadImgLoaded) return;
+  const [x0, y0, x1, y1] = uploadWindowBounds();
+  const scale = parseFloat(document.getElementById("uploadScaleInput").value);
+  const cs = new CoordinateSystem(uploadCanvas.height, isNaN(scale) ? null : scale);
+  const refSide = Math.max(1, Math.round(uploadWindowSize * uploadZoom));
+  const refCanvasFull = cropAndResize(uploadCanvas, x0, y0, uploadWindowSize, uploadWindowSize, refSide, uploadInterp);
+
+  const searchBlob = await canvasToBlob(uploadCanvas);
+  const referenceBlob = await canvasToBlob(refCanvasFull);
+
+  DatasetStore.add({
+    source: "uploaded",
+    centerBl: cs.pxToBl(uploadCenter[0], uploadCenter[1]),
+    tlBl: cs.pxToBl(x0, y0),
+    brBl: cs.pxToBl(x1, y1),
+    magnification: uploadZoom, interpolation: uploadInterp, seed: null,
+    searchBlob, referenceBlob,
+  });
+});
+
+/* =========================================================================
+   DATASET TAB wiring
+   ========================================================================= */
+document.getElementById("btnExportCsv").addEventListener("click", () => {
+  const blob = new Blob([DatasetStore.toCsv()], { type: "text/csv" });
+  downloadBlob(blob, "coordinates.csv");
+});
+document.getElementById("btnExportZip").addEventListener("click", async (e) => {
+  const btn = e.target;
+  const original = btn.textContent;
+  btn.textContent = "Zipping…"; btn.disabled = true;
+  try {
+    const blob = await DatasetStore.toZip();
+    downloadBlob(blob, "driftsense_dataset.zip");
+  } finally {
+    btn.textContent = original; btn.disabled = false;
+  }
+});
+document.getElementById("btnClearDataset").addEventListener("click", () => {
+  if (confirm("Clear all saved samples in this session? This cannot be undone.")) DatasetStore.clear();
+});
+</script>
+</body>
+</html>
