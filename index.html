@@ -52,6 +52,8 @@
   .badge { font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px; }
   .badge-live { background:#dcfce7; color:#166534; }
   .badge-pending { background:#fef3c7; color:#92400e; }
+  .badge-optical { background:#ede9fe; color:#5b21b6; }
+  .badge-upload { background:#dbeafe; color:#1e40af; }
   .dropzone {
     border: 2px dashed var(--line); border-radius: 16px; padding: 48px 24px; text-align:center;
     transition: all .15s ease; cursor: pointer;
@@ -79,7 +81,7 @@
       <button class="tab-btn active" data-tab="generated">Generated</button>
       <button class="tab-btn" data-tab="upload">Upload Image</button>
       <button class="tab-btn" data-tab="dataset">Dataset <span id="datasetCountBadge" class="ml-1 mono text-[11px] text-indigo-600"></span></button>
-      <button class="tab-btn" data-tab="rgb">RGB (soon)</button>
+      <button class="tab-btn" data-tab="rgb">RGB / Optical</button>
     </div>
   </div>
 </header>
@@ -262,14 +264,71 @@
     </div>
   </section>
 
-  <!-- ============ TAB: RGB (placeholder) ============ -->
+  <!-- ============ TAB: RGB ============ -->
   <section id="tab-rgb" class="tab-panel">
-    <div class="card p-10 text-center">
-      <span class="badge badge-pending">COMING SOON</span>
-      <h3 class="text-lg font-bold mt-3">RGB Die Generation</h3>
-      <p class="text-sm text-slate-500 max-w-md mx-auto mt-2">
-        This section is intentionally not built yet. Send a reference RGB die/optical image and this tab will generate matching color imagery alongside the existing grayscale SEM pipeline.
-      </p>
+    <p class="text-xs text-slate-500 mb-4 max-w-3xl">
+      Colorized from the <em>same</em> die pattern and coordinates as the Generated tab — real color in an optical die
+      photo comes from thin-film interference (layer-stack thickness variation), so this recolors the identical
+      structure rather than generating a separate image, keeping grayscale (SEM) and color (optical) views of the same
+      region geometrically consistent.
+    </p>
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+      <div class="card p-5 lg:col-span-1">
+        <div class="flex items-center justify-between mb-3">
+          <div>
+            <p class="kpi-label">Search Image — Optical</p>
+            <p class="text-sm text-slate-500">Colorized · same seed as Generated tab</p>
+          </div>
+          <span class="badge badge-optical">RGB</span>
+        </div>
+        <canvas id="rgbSearchCanvas" width="1000" height="1000" class="w-full border border-slate-200"></canvas>
+        <div class="flex gap-2 mt-4">
+          <button id="btnDownloadRgbSearch" class="btn-secondary w-full">Download PNG</button>
+        </div>
+      </div>
+
+      <div class="card p-5 lg:col-span-1">
+        <div class="flex items-center justify-between mb-3">
+          <div>
+            <p class="kpi-label">Reference Image — Optical</p>
+            <p class="text-sm text-slate-500">Live preview · ~10× magnified</p>
+          </div>
+          <span class="badge badge-optical" id="rgbInterpBadge">BICUBIC</span>
+        </div>
+        <canvas id="rgbReferenceCanvas" width="500" height="500" class="w-full border border-slate-200"></canvas>
+        <div class="mt-4 space-y-3">
+          <div>
+            <label class="kpi-label block mb-1">Interpolation mode</label>
+            <select id="rgbInterpSelect" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm">
+              <option value="nearest">Nearest</option>
+              <option value="bilinear">Bilinear</option>
+              <option value="bicubic" selected>Bicubic</option>
+            </select>
+          </div>
+          <button id="btnSaveRgbSample" class="btn-primary w-full">Save Optical Sample (randomized 9–11×)</button>
+          <p class="text-xs text-slate-500">Hover on either tab's Search Image — the window position is shared, so this always reflects the same coordinates as the Generated tab.</p>
+        </div>
+      </div>
+
+      <div class="card p-5 lg:col-span-1">
+        <p class="kpi-label mb-3">Live Coordinates</p>
+        <div class="space-y-4">
+          <div>
+            <p class="text-xs font-semibold text-slate-400 mb-1">CENTER</p>
+            <div id="rgbCoordCenter" class="coord-block"></div>
+          </div>
+          <div>
+            <p class="text-xs font-semibold text-slate-400 mb-1">TOP-LEFT</p>
+            <div id="rgbCoordTL" class="coord-block"></div>
+          </div>
+          <div>
+            <p class="text-xs font-semibold text-slate-400 mb-1">BOTTOM-RIGHT</p>
+            <div id="rgbCoordBR" class="coord-block"></div>
+          </div>
+        </div>
+        <p class="text-xs text-slate-500 mt-4">Shared with the Generated tab — moving the window on either grayscale or optical view updates both.</p>
+      </div>
     </div>
   </section>
 
@@ -410,25 +469,35 @@ class SEMPatternGenerator {
 
   _idx(x, y, W) { return y * W + x; }
 
-  _makeSubstrate(buf, W) {
-    const base = this.rng.uniform(90, 115);
-    buf.fill(base);
-    const lowRes = Math.max(4, Math.floor(W / 20));
-    const low = new Float32Array(lowRes * lowRes);
-    for (let i = 0; i < low.length; i++) low[i] = this.rng.gaussian(0, 6);
-    // bilinear upsample lowRes x lowRes -> W x W, add onto buf
+  // Bilinear-upsample a lowRes x lowRes field to W x W. Shared by the
+  // substrate's low-frequency shading and the RGB colorizer's low-frequency
+  // hue/saturation drift field (both are "smooth spatial variation" in the
+  // same sense — oxide thickness drift under interference color).
+  _bilinearUpsample(lowArr, lowRes, W) {
+    const out = new Float32Array(W * W);
     for (let y = 0; y < W; y++) {
       const gy = (y / W) * (lowRes - 1);
       const y0 = Math.floor(gy), y1 = Math.min(lowRes - 1, y0 + 1), fy = gy - y0;
       for (let x = 0; x < W; x++) {
         const gx = (x / W) * (lowRes - 1);
         const x0 = Math.floor(gx), x1 = Math.min(lowRes - 1, x0 + 1), fx = gx - x0;
-        const v00 = low[y0 * lowRes + x0], v01 = low[y0 * lowRes + x1];
-        const v10 = low[y1 * lowRes + x0], v11 = low[y1 * lowRes + x1];
+        const v00 = lowArr[y0 * lowRes + x0], v01 = lowArr[y0 * lowRes + x1];
+        const v10 = lowArr[y1 * lowRes + x0], v11 = lowArr[y1 * lowRes + x1];
         const v0 = v00 + (v01 - v00) * fx, v1 = v10 + (v11 - v10) * fx;
-        buf[this._idx(x, y, W)] += v0 + (v1 - v0) * fy;
+        out[this._idx(x, y, W)] = v0 + (v1 - v0) * fy;
       }
     }
+    return out;
+  }
+
+  _makeSubstrate(buf, W) {
+    const base = this.rng.uniform(90, 115);
+    buf.fill(base);
+    const lowRes = Math.max(4, Math.floor(W / 20));
+    const low = new Float32Array(lowRes * lowRes);
+    for (let i = 0; i < low.length; i++) low[i] = this.rng.gaussian(0, 6);
+    const upsampled = this._bilinearUpsample(low, lowRes, W);
+    for (let i = 0; i < buf.length; i++) buf[i] += upsampled[i];
   }
 
   _partitionRegions(W) {
@@ -643,6 +712,80 @@ class SEMPatternGenerator {
     }
     return imgData;
   }
+
+  // -- RGB / optical-microscope-style colorization ------------------------
+  // Real color in an optical die photo comes from thin-film interference:
+  // light reflecting off the stacked transparent oxide/dielectric layers,
+  // with hue shifting as layer thickness varies with the underlying
+  // structure (the same physics as an oil slick or a soap bubble) — not
+  // from any literal "paint" on the silicon. SEM images, by contrast, are
+  // inherently grayscale (electrons, not visible light), which is why the
+  // rest of this generator never produces color.
+  //
+  // Rather than duplicating every draw method to also emit color (a much
+  // larger, more failure-prone rewrite), this colorizes the FINAL grayscale
+  // buffer: grayscale intensity bands map to characteristic interference
+  // hues (matched empirically to the intensity ranges each structure type
+  // actually produces — dark via centers, mid-gray substrate, bright metal
+  // traces, etc.), and a smooth low-frequency hue/saturation drift field
+  // (generated the same way as the substrate's low-frequency shading) adds
+  // the organic, large-scale color variation real interference photos show
+  // as oxide thickness drifts gradually across the die.
+  //
+  // Deterministic from the SAME seed as the grayscale pattern (derived via
+  // XOR, not dependent on how far generate() advanced its own RNG stream),
+  // so a given seed always produces the same grayscale AND the same RGB
+  // colorization of it.
+  toRGBImageData(buf, W) {
+    if (this.lastSeed === null) throw new Error("Call generate() before toRGBImageData().");
+    const hueRng = new SeededRNG((this.lastSeed ^ 0x9e3779b9) >>> 0);
+    const lowRes = 12;
+    const hueLow = new Float32Array(lowRes * lowRes);
+    const satLow = new Float32Array(lowRes * lowRes);
+    for (let i = 0; i < hueLow.length; i++) {
+      hueLow[i] = hueRng.uniform(-20, 20);
+      satLow[i] = hueRng.uniform(-6, 6);
+    }
+    const hueField = this._bilinearUpsample(hueLow, lowRes, W);
+    const satField = this._bilinearUpsample(satLow, lowRes, W);
+
+    // Which color band a pixel falls into is chosen from a SMOOTHED copy of
+    // the buffer, not the raw noisy one — otherwise per-pixel shot/read
+    // noise flips neighboring pixels across a band boundary and shows up as
+    // multicolor speckle instead of the smooth interference-color regions
+    // real optical die photos show. Brightness (below) still uses the raw
+    // buffer, so fine structure/noise is preserved as luminance grain over
+    // a smooth base color — exactly how the texture reads in real photos.
+    const smoothed = this._boxBlur(buf, W, 3, 2);
+
+    const imgData = new ImageData(W, W);
+    for (let i = 0; i < W * W; i++) {
+      const gSmooth = Math.min(255, Math.max(0, smoothed[i]));
+      const gRaw = Math.min(255, Math.max(0, buf[i]));
+      const band = SEMPatternGenerator._colorBand(gSmooth);
+      const hue = ((band.hue + hueField[i]) % 360 + 360) % 360;
+      const sat = Math.min(100, Math.max(0, band.sat + satField[i]));
+      const light = Math.min(88, Math.max(18, 30 + (gRaw / 255) * 55));
+      const [r, gC, b] = hslToRgb(hue, sat, light);
+      imgData.data[i * 4] = r; imgData.data[i * 4 + 1] = gC; imgData.data[i * 4 + 2] = b; imgData.data[i * 4 + 3] = 255;
+    }
+    return imgData;
+  }
+
+  // Uses the smoothed buffer (already blurred before this is called) for
+  // hard band selection — discrete cutoffs are fine here since the input
+  // is already spatially smooth, and *linearly interpolating hue* between
+  // e.g. blue (~210°) and gold (~38°) would otherwise sweep straight
+  // through green/yellow on the color wheel, muddying large areas with a
+  // hue neither region actually has.
+  static _colorBand(g) {
+    if (g < 55) return { hue: 250, sat: 34 };
+    if (g < 95) return { hue: 235, sat: 26 };
+    if (g < 125) return { hue: 212, sat: 20 };
+    if (g < 155) return { hue: 38, sat: 28 };
+    if (g < 195) return { hue: 315, sat: 30 };
+    return { hue: 44, sat: 16 };
+  }
 }
 
 /* =========================================================================
@@ -702,7 +845,7 @@ const DatasetStore = {
       const thumbUrl = s.referenceBlob ? URL.createObjectURL(s.referenceBlob) : "";
       tr.innerHTML = `
         <td class="mono">${s.id}</td>
-        <td><span class="badge ${s.source === "generated" ? "badge-live" : "badge-pending"}">${s.source}</span></td>
+        <td><span class="badge ${s.source === "generated" ? "badge-live" : s.source === "generated_rgb" ? "badge-optical" : "badge-upload"}">${s.source}</span></td>
         <td class="mono">${s.centerBl[0]}, ${s.centerBl[1]}</td>
         <td class="mono">${s.tlBl[0]}, ${s.tlBl[1]}</td>
         <td class="mono">${s.brBl[0]}, ${s.brBl[1]}</td>
@@ -736,6 +879,22 @@ function cropAndResize(sourceCanvas, x0, y0, w, h, outSize, interpMode) {
 
 function canvasToBlob(canvas) {
   return new Promise((resolve) => canvas.toBlob((b) => resolve(b), "image/png"));
+}
+
+// Standard HSL -> RGB conversion. h in degrees [0,360), s/l as percentages [0,100].
+function hslToRgb(h, s, l) {
+  h = ((h % 360) + 360) % 360; s = s / 100; l = l / 100;
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+  const m = l - c / 2;
+  let r = 0, g = 0, b = 0;
+  if (h < 60) { r = c; g = x; b = 0; }
+  else if (h < 120) { r = x; g = c; b = 0; }
+  else if (h < 180) { r = 0; g = c; b = x; }
+  else if (h < 240) { r = 0; g = x; b = c; }
+  else if (h < 300) { r = x; g = 0; b = c; }
+  else { r = c; g = 0; b = x; }
+  return [Math.round((r + m) * 255), Math.round((g + m) * 255), Math.round((b + m) * 255)];
 }
 
 function downloadBlob(blob, filename) {
@@ -810,26 +969,44 @@ function updateCoordDisplays() {
   coordSys.renderInto(document.getElementById("coordCenter"), squareCenter[0], squareCenter[1], true);
   coordSys.renderInto(document.getElementById("coordTL"), x0, y0, true);
   coordSys.renderInto(document.getElementById("coordBR"), x1, y1, true);
+  // RGB tab shares the same squareCenter/coordinate system — same physical
+  // region, just a different (colorized) rendering of it.
+  coordSys.renderInto(document.getElementById("rgbCoordCenter"), squareCenter[0], squareCenter[1], true);
+  coordSys.renderInto(document.getElementById("rgbCoordTL"), x0, y0, true);
+  coordSys.renderInto(document.getElementById("rgbCoordBR"), x1, y1, true);
 }
 
 function regenerate(seed) {
   currentBuf = generator.generate(seed);
+  currentRgbImgData = generator.toRGBImageData(currentBuf, SEARCH_SIZE);
   document.getElementById("seedValue").textContent = generator.lastSeed;
   redrawSearchCanvas();
   updateReferencePreview();
+  redrawRgbSearchCanvas();
+  updateRgbReferencePreview();
   updateCoordDisplays();
 }
 
-searchCanvas.addEventListener("mousemove", (e) => {
-  const rect = searchCanvas.getBoundingClientRect();
+function onWindowMoved() {
+  redrawSearchCanvas();
+  updateReferencePreview();
+  redrawRgbSearchCanvas();
+  updateRgbReferencePreview();
+  updateCoordDisplays();
+}
+
+function mouseToSquareCenter(canvas, e) {
+  const rect = canvas.getBoundingClientRect();
   const scaleX = SEARCH_SIZE / rect.width, scaleY = SEARCH_SIZE / rect.height;
   const half = WINDOW_SIZE / 2;
   const fx = (e.clientX - rect.left) * scaleX;
   const fy = (e.clientY - rect.top) * scaleY;
-  squareCenter = [clamp(fx, half, SEARCH_SIZE - half), clamp(fy, half, SEARCH_SIZE - half)];
-  redrawSearchCanvas();
-  updateReferencePreview();
-  updateCoordDisplays();
+  return [clamp(fx, half, SEARCH_SIZE - half), clamp(fy, half, SEARCH_SIZE - half)];
+}
+
+searchCanvas.addEventListener("mousemove", (e) => {
+  squareCenter = mouseToSquareCenter(searchCanvas, e);
+  onWindowMoved();
 });
 
 searchCanvas.addEventListener("click", () => saveGeneratedSample());
@@ -874,7 +1051,85 @@ async function saveGeneratedSample() {
   });
 }
 
+/* =========================================================================
+   RGB / OPTICAL TAB wiring — shares squareCenter, currentWindowBounds(),
+   coordSys, and generator.lastSeed with the Generated tab (same physical
+   region, colorized rendering). Only the pixel data source differs.
+   ========================================================================= */
+const rgbSearchCanvas = document.getElementById("rgbSearchCanvas");
+const rgbSearchCtx = rgbSearchCanvas.getContext("2d");
+const rgbReferenceCanvas = document.getElementById("rgbReferenceCanvas");
+let currentRgbImgData = null;
+let rgbInterp = "bicubic";
+
+function rgbSearchCanvasRaw() {
+  const c = document.createElement("canvas");
+  c.width = SEARCH_SIZE; c.height = SEARCH_SIZE;
+  c.getContext("2d").putImageData(currentRgbImgData, 0, 0);
+  return c;
+}
+
+function redrawRgbSearchCanvas() {
+  if (!currentRgbImgData) return;
+  rgbSearchCtx.putImageData(currentRgbImgData, 0, 0);
+  const half = WINDOW_SIZE / 2;
+  const x0 = clamp(squareCenter[0] - half, 0, SEARCH_SIZE - WINDOW_SIZE);
+  const y0 = clamp(squareCenter[1] - half, 0, SEARCH_SIZE - WINDOW_SIZE);
+  rgbSearchCtx.strokeStyle = "#ef4444";
+  rgbSearchCtx.lineWidth = 3;
+  rgbSearchCtx.strokeRect(x0, y0, WINDOW_SIZE, WINDOW_SIZE);
+}
+
+function updateRgbReferencePreview() {
+  if (!currentRgbImgData) return;
+  const [x0, y0] = currentWindowBounds();
+  const rawCanvas = rgbSearchCanvasRaw();
+  const cropped = cropAndResize(rawCanvas, x0, y0, WINDOW_SIZE, WINDOW_SIZE, rgbReferenceCanvas.width, rgbInterp);
+  rgbReferenceCanvas.getContext("2d").drawImage(cropped, 0, 0);
+}
+
+rgbSearchCanvas.addEventListener("mousemove", (e) => {
+  squareCenter = mouseToSquareCenter(rgbSearchCanvas, e);
+  onWindowMoved();
+});
+
+rgbSearchCanvas.addEventListener("click", () => saveRgbSample());
+
+document.getElementById("rgbInterpSelect").addEventListener("change", (e) => {
+  rgbInterp = e.target.value;
+  document.getElementById("rgbInterpBadge").textContent = rgbInterp.toUpperCase();
+  updateRgbReferencePreview();
+});
+document.getElementById("btnSaveRgbSample").addEventListener("click", () => saveRgbSample());
+
+document.getElementById("btnDownloadRgbSearch").addEventListener("click", async () => {
+  const blob = await canvasToBlob(rgbSearchCanvasRaw());
+  downloadBlob(blob, "DriftSense_SearchImage_RGB.png");
+});
+
+async function saveRgbSample() {
+  if (!currentRgbImgData) return;
+  const [x0, y0, x1, y1] = currentWindowBounds();
+  const magnification = generator.rng.uniform(9, 11);
+  const refSide = Math.max(1, Math.round(WINDOW_SIZE * magnification));
+  const rawCanvas = rgbSearchCanvasRaw();
+  const refCanvasFull = cropAndResize(rawCanvas, x0, y0, WINDOW_SIZE, WINDOW_SIZE, refSide, rgbInterp);
+
+  const searchBlob = await canvasToBlob(rawCanvas);
+  const referenceBlob = await canvasToBlob(refCanvasFull);
+
+  DatasetStore.add({
+    source: "generated_rgb",
+    centerBl: coordSys.pxToBl(squareCenter[0], squareCenter[1]),
+    tlBl: coordSys.pxToBl(x0, y0),
+    brBl: coordSys.pxToBl(x1, y1),
+    magnification, interpolation: rgbInterp, seed: generator.lastSeed,
+    searchBlob, referenceBlob,
+  });
+}
+
 regenerate(); // initial pattern on load
+
 
 /* =========================================================================
    UPLOAD TAB wiring
